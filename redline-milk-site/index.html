@@ -228,9 +228,10 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
     <label>CHANGE PRESETS EVERY<div class="row" id="phraseRow"></div></label>
     <label>PICK FROM<div class="row" id="pickRow"></div></label>
     <label>AUDIO SYNC <i>earlier (+) for a TV’s picture delay, later (−) for Bluetooth speakers</i><div class="lv"><input type="range" id="syncR" min="-250" max="400" step="5"><output id="syncO"></output></div><div class="row"><button class="chip" data-a="calib">SYNC TEST</button></div></label>
+    <label>TIGHT SYNC <i>for a shared tab: Redline plays the tab’s sound a moment later, so it hears every hit first</i><div class="row" id="lookRow"></div></label>
     <label>LISTENING <i id="modeO">—</i></label>
     <label>SENSITIVITY<div class="lv"><input type="range" id="sensR" min="30" max="250" step="5"><output id="sensO"></output></div></label>
-    <label>VOLUME (SONGS)<div class="lv"><input type="range" id="volR" min="0" max="100" step="1"><output id="volO"></output></div></label>
+    <label>VOLUME<div class="lv"><input type="range" id="volR" min="0" max="100" step="1"><output id="volO"></output></div></label>
     <label>QUALITY<div class="row" id="qRow"></div></label>
     <label>YOUR IMAGE <i>warped by the visual</i><div class="row"><button class="chip" data-a="img">CHOOSE…</button><input type="range" id="imgR" min="0" max="100" step="1" style="flex:1"></div></label>
     <label>DJ BOARD (MIDI)<div class="row"><button class="chip" data-a="midi">CONNECT</button><span id="midiSt" style="font-size:8px;letter-spacing:.14em;color:rgba(255,255,255,.5)"></span></div></label>
@@ -296,14 +297,15 @@ const F = {                                   // everything the visuals read, up
   beat:false, downbeat:false, beatIndex:0, bar:0, phase:0, bpm:0, locked:false, conf:0,
   build:0, drop:false, dropT:0, dropSec:0, breakdown:0, hatRate:0, pitch:-1,
 };
-let actx = null, inBus, outGain, uiBus, anA, anB, fbA, fbB, wbuf, bandEdges, srcNode = null, stream = null, fileNode = null;
+let actx = null, inBus, earBus, outGain, uiBus, anA, anB, fbA, fbB, wbuf, bandEdges, srcNode = null, stream = null, fileNode = null;
 let source = 'none', running = false, volume = store.get('vol', .85), sens = store.get('sens', 1);
 const player = $('#player');
 function ensureCtx(){
   if(!actx){
     const AC = window.AudioContext || window.webkitAudioContext;
     actx = new AC({latencyHint:'interactive'});
-    inBus = actx.createGain();
+    inBus = actx.createGain();                      // what the spectrum (bass, vocal, chords, the waveform) reads: in step with what you hear
+    earBus = actx.createGain();                     // what the drum ears read: the same, or ahead of it with look-ahead
     anA = actx.createAnalyser(); anA.fftSize = 1024; anA.smoothingTimeConstant = 0; anA.minDecibels = -100; anA.maxDecibels = -10;
     anB = actx.createAnalyser(); anB.fftSize = 4096; anB.smoothingTimeConstant = 0; anB.minDecibels = -100; anB.maxDecibels = -10;
     inBus.connect(anA); inBus.connect(anB);
@@ -311,7 +313,7 @@ function ensureCtx(){
     const hz = actx.sampleRate/anA.fftSize; bandEdges = [];
     for(let i=0;i<=NB;i++) bandEdges.push(Math.max(1, Math.min(anA.frequencyBinCount - 1, Math.round(30*Math.pow(16000/30, i/NB)/hz))));
     outGain = actx.createGain(); outGain.gain.value = volume; outGain.connect(actx.destination);
-    uiBus = actx.createGain(); uiBus.gain.value = .9; uiBus.connect(actx.destination); uiBus.connect(inBus);   // the intro sound also lights the visuals
+    uiBus = actx.createGain(); uiBus.gain.value = .9; uiBus.connect(actx.destination); uiBus.connect(inBus); uiBus.connect(earBus);   // the intro sound also lights the visuals
   }
   if(actx.state === 'suspended') actx.resume();
 }
@@ -321,13 +323,34 @@ function setSens(v){ sens = clamp(v, .3, 2.5); store.set('sens', sens); }
 /* ===================================================================== sources */
 const FILES = [];
 let cur = null, trackIdx = -1;
-function detach(){ if(srcNode){ try{ srcNode.disconnect(); }catch(e){} srcNode = null; } }
+/* LOOK-AHEAD for a shared tab: the tab's own sound is muted and Redline plays it instead, a fraction of a second later.
+   The analysis hears the music first, so every hit — not just kicks on the beat — is known before you hear it and can be
+   shown exactly on the sound. (A mic or line-in can't be held back: that sound is already in the room.) */
+const LOOK = {want:store.get('look', true), ms:store.get('lookMs', 200), active:false, node:null};
+function attach(){
+  if(!stream || srcNode) return;
+  srcNode = actx.createMediaStreamSource(stream); srcNode.connect(earBus);
+  if(LOOK.active){ LOOK.node = actx.createDelay(1); LOOK.node.delayTime.value = LOOK.ms/1000; srcNode.connect(LOOK.node); LOOK.node.connect(outGain); LOOK.node.connect(inBus); }
+  else srcNode.connect(inBus);
+}
+function detach(){ if(srcNode){ try{ srcNode.disconnect(); }catch(e){} srcNode = null; } if(LOOK.node){ try{ LOOK.node.disconnect(); }catch(e){} LOOK.node = null; } }
+function setLook(ms){
+  // 0 = off. The hold-back time changes straight away; switching it on or off needs the tab shared again
+  const want = ms > 0; if(ms > 0){ LOOK.ms = ms; store.set('lookMs', ms); if(LOOK.node) LOOK.node.delayTime.setTargetAtTime(ms/1000, actx.currentTime, .05); }
+  const changed = want !== LOOK.want; LOOK.want = want; store.set('look', want); return changed;
+}
+function useStream(st, kind, held){
+  stopAll(); stream = st; LOOK.active = !!held;
+  st.getTracks().forEach(t => t.addEventListener('ended', () => { if(stream === st){ stream = null; detach(); running = false; source = 'none'; cur = null; toast('Sharing stopped.'); } }));
+  attach();
+  source = kind === 'tab' ? 'tab' : 'line'; running = true; resetListening();
+}
 function stopAll(){ player.pause(); detach(); if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; } }
 function playFile(i){
   if(!FILES.length) return;
   ensureCtx(); stopAll();
   trackIdx = (i + FILES.length) % FILES.length; cur = FILES[trackIdx];
-  if(!fileNode){ fileNode = actx.createMediaElementSource(player); fileNode.connect(inBus); fileNode.connect(outGain); }
+  if(!fileNode){ fileNode = actx.createMediaElementSource(player); fileNode.connect(inBus); fileNode.connect(earBus); fileNode.connect(outGain); }
   player.src = cur.url; player.play().catch(() => {});
   source = 'file'; running = true; resetListening();
   if((typeof LYR !== "undefined" && LYR)) LYR.forTrack(cur);
@@ -355,14 +378,16 @@ async function goLive(kind){
     if(!md || !(kind === 'tab' ? md.getDisplayMedia : md.getUserMedia)) throw {name:'unsupported'};
     ensureCtx();
     const clean = {echoCancellation:false, noiseSuppression:false, autoGainControl:false};
+    const canMute = !!(md.getSupportedConstraints && md.getSupportedConstraints().suppressLocalAudioPlayback), ask = kind === 'tab' && LOOK.want && canMute;
     const st = kind === 'tab'
-      ? await md.getDisplayMedia({video:{frameRate:1}, audio:clean, systemAudio:'include', selfBrowserSurface:'exclude', surfaceSwitching:'include'})
+      ? await md.getDisplayMedia({video:{frameRate:1}, audio:Object.assign({}, clean, ask ? {suppressLocalAudioPlayback:true} : {}), systemAudio:'include', selfBrowserSurface:'exclude', surfaceSwitching:'include'})
       : await md.getUserMedia({audio:clean});
     if(!st.getAudioTracks().length){ st.getTracks().forEach(t => t.stop()); throw {name:'no-audio'}; }
-    stopAll(); stream = st;
-    st.getTracks().forEach(t => t.addEventListener('ended', () => { if(stream === st){ stream = null; detach(); running = false; source = 'none'; cur = null; toast('Sharing stopped.'); } }));
-    srcNode = actx.createMediaStreamSource(st); srcNode.connect(inBus);
-    source = kind === 'tab' ? 'tab' : 'line'; running = true; resetListening();
+    // did the browser really mute the tab? Only then do we play it ourselves (otherwise you'd hear it twice)
+    const set = st.getAudioTracks()[0].getSettings ? st.getAudioTracks()[0].getSettings() : {};
+    const held = ask && set.suppressLocalAudioPlayback !== false;
+    useStream(st, kind, held);
+    if(kind === 'tab') toast(held ? 'Tight sync on — the sound now comes through Redline, ' + LOOK.ms + ' ms behind the tab. (Hear an echo? Turn it off in Settings.)' : LOOK.want ? 'This browser can’t hold the tab’s sound back — syncing live instead.' : 'Sharing — tight sync is off.', 6000);
     const label = (st.getVideoTracks()[0] || st.getAudioTracks()[0]).label || '';
     cur = {title: kind === 'tab' ? 'Shared tab' : 'Line in', artist:'', live:true, label};
     if((typeof LYR !== "undefined" && LYR)) LYR.forTrack(cur);
@@ -381,7 +406,7 @@ function pausePlay(){ if(!running) return; if(source === 'file') player.pause();
 function resumePlay(){
   ensureCtx();
   if(source === 'file') player.play().catch(() => {});
-  else if(stream){ if(!srcNode){ srcNode = actx.createMediaStreamSource(stream); srcNode.connect(inBus); } }
+  else if(stream) attach();
   else return false;
   running = true; return true;
 }
@@ -470,7 +495,7 @@ registerProcessor('rl-ears', RLEars);`;
     catch(e){ await actx.audioWorklet.addModule('data:application/javascript;base64,' + btoa(unescape(encodeURIComponent(src)))); }
     const node = new AudioWorkletNode(actx, 'rl-ears', {numberOfInputs:1, numberOfOutputs:1, outputChannelCount:[1]});
     const mute = actx.createGain(); mute.gain.value = 0; node.connect(mute); mute.connect(actx.destination);   // keeps it running
-    inBus.connect(node);
+    earBus.connect(node);
     node.port.onmessage = m => earsMsg(m.data);
     EARS.node = node; EARS.ready = true;
   }catch(e){ console.warn('EARS worklet unavailable, using the per-frame detector:', e); EARS.failed = true; }
@@ -484,7 +509,9 @@ function ctxToPerf(T){
 }
 function heardAt(T){
   // a mic or line-in was heard *before* it reached us; a shared tab or a song plays through the speakers after
+  // …and a tab held back by look-ahead is heard that much later again
   const t = ctxToPerf(T);
+  if(source === 'tab' && LOOK.active) return t + LOOK.ms;
   return source === 'line' ? t - ((actx.outputLatency || 0) + (actx.baseLatency || 0))*1000 - 10 : t;
 }
 function earsMsg(d){
@@ -653,6 +680,7 @@ function listen(t, dt){
   if(source === 'file' && cur && MAP.for !== cur){ if(cur.map) mapStart(cur); else if(!cur.mapping && !cur.mapFailed && running && !window.__noMap) mapTrack(cur); }
   if(MAP.on && (source !== 'file' || MAP.for !== cur)) mapStop();
   const useEars = live && !mapMode && EARS.ready && EARS.got > 0;
+  const tight = useEars && source === 'tab' && LOOK.active;      // look-ahead: every real hit is known in time, no need to predict
   // ---- spectra
   if(live){
     anA.getFloatFrequencyData(fbA); anA.getByteTimeDomainData(wbuf); anB.getFloatFrequencyData(fbB);
@@ -721,14 +749,14 @@ function listen(t, dt){
     for(let i=EQ.length - 1; i>=0; i--){
       const e = EQ[i]; if(e.due > NOW.d + NOW.half) continue;
       EQ.splice(i, 1); if(NOW.d - e.due > 200) continue;
-      if(e.type === 'kick' && F.locked && PLL.four && CLK.period){
+      if(e.type === 'kick' && F.locked && PLL.four && CLK.period && !tight){
         // on-the-grid kicks were already shown on the predicted beat; only the off-grid ones show now
         const ms = wrapPh((e.due - CLK.t0)/CLK.period)*CLK.period, half = Math.abs(Math.abs(ms/CLK.period) - .5) < .14;
         if(Math.abs(ms) < 90 || half) continue;
       }
       hit[e.type] = Math.max(hit[e.type], e.s || 1);
     }
-    if(F.locked && PLL.four && F.beat && now - PLL.lastMatch < 2.5*CLK.period) hit.kick = Math.max(hit.kick, 1);
+    if(!tight && F.locked && PLL.four && F.beat && now - PLL.lastMatch < 2.5*CLK.period) hit.kick = Math.max(hit.kick, 1);
     if(!CLK.period && hit.kick && CLK.conf <= .25){ F.beat = true; CLK.index++; F.downbeat = CLK.index % 4 === 0; }
     tempoCheck(dt, now, midiClock);
     F.beatIndex = CLK.index; F.bar = Math.floor(CLK.index/4);
@@ -817,7 +845,7 @@ function listen(t, dt){
   } else { brk = 0; F.build = ease(F.build, 0, 1.5, dt); }
   F.breakdown = ease(F.breakdown, brk > 1.5 ? 1 : 0, 2, dt);
   F.dropT *= Math.exp(-3.5*dt); if(F.dropSec > 0) F.dropSec -= dt;
-  F.mode = mapMode ? 'map' : useEars ? 'ears' : live ? 'frame' : '';
+  F.mode = mapMode ? 'map' : tight ? 'tight' : useEars ? 'ears' : live ? 'frame' : '';
 }
 
 /* ===================================================================== tempo by autocorrelation of the onset strength (200 Hz, 8 s),
@@ -1402,6 +1430,7 @@ UI.init = function(){
   chips($('#phraseRow'), [['4', '4 BARS'], ['8', '8 BARS'], ['16', '16 BARS'], ['32', '32 BARS']], String(MILK.phrase), v => setPhrase(+v));
   chips($('#pickRow'), [['auto', 'EVERYTHING'], ['favs', 'FAVOURITES'], ['orig', 'REDLINE ONLY']], MILK.mode, v => { MILK.mode = v; store.set('pick', v); });
   chips($('#qRow'), [['auto', 'AUTO'], ['1', 'HIGH'], ['.7', 'MEDIUM'], ['.5', 'LOW']], QUALITY.auto ? 'auto' : String(QUALITY.max), v => { QUALITY.auto = v === 'auto'; store.set('qauto', QUALITY.auto); if(v !== 'auto'){ QUALITY.max = +v; store.set('qmax', +v); MILK.scale = +v; milkResize(true); } else { QUALITY.max = 1; store.set('qmax', 1); } });
+  chips($('#lookRow'), [['0', 'OFF'], ['120', '120 MS'], ['200', '200 MS'], ['300', '300 MS']], LOOK.want ? String(LOOK.ms) : '0', v => { if(setLook(+v) && source === 'tab') toast('Share the tab again (SOURCE → TAB) to switch tight sync ' + (+v ? 'on' : 'off') + '.', 4200); });
   const rng = (id, out, get, set, f = v => v) => { const r = $(id), o = $(out); r.value = get(); o.textContent = f(r.value); r.addEventListener('input', () => { set(+r.value); o.textContent = f(r.value); }); };
   rng('#syncR', '#syncO', () => PLL.offset, v => setSync(v), v => (v > 0 ? '+' : '') + v + ' ms');
   $('#calTap').addEventListener('pointerdown', e => { e.preventDefault(); CAL.tap(); });
@@ -1530,7 +1559,7 @@ UI.update = function(dt){
   if(document.body.classList.contains('idle') && UI.nowT <= 0) $('#now').classList.add('fade');
   CAL.tick();
   if(UI.panel === 'settings'){
-    const m = F.mode === 'map' ? 'SONG MAP — analysed ahead, every hit lands on the sound' : F.mode === 'ears' ? 'LIVE — ears on the audio thread, beat clock predicts the kicks'
+    const m = F.mode === 'map' ? 'SONG MAP — analysed ahead, every hit lands on the sound' : F.mode === 'tight' ? 'TIGHT — the tab is held back ' + LOOK.ms + ' ms, so every hit is seen coming' : F.mode === 'ears' ? 'LIVE — ears on the audio thread, beat clock predicts the kicks'
       : F.mode === 'frame' ? 'LIVE — per-frame (this browser has no AudioWorklet)' : (cur && cur.mapping) ? 'ANALYSING THE SONG…' : '—';
     if(m !== UI.sm){ $('#modeO').textContent = m; UI.sm = m; }
   }
@@ -1761,7 +1790,7 @@ UI.init();
 $('#gate').addEventListener('click', introStart);
 $('#gate').focus();
 let last = performance.now(), T = 0;
-window.RL = {F, MILK, FX, LYR, CLK, get running(){ return running; }, playDemo, milkGo, fireDrop, UI, introStart, ensureCtx};   // for tests
+window.RL = {F, MILK, FX, LYR, CLK, LOOK, get running(){ return running; }, playDemo, milkGo, fireDrop, UI, introStart, ensureCtx};   // for tests
 function frame(now){
   requestAnimationFrame(frame);
   const dt = Math.min(.05, Math.max(0, (now - last)/1000)); last = now; T += dt;
