@@ -1,5 +1,7 @@
 # Redline Milk — putting it online
 
+Redline Milk is made by **Maxwell Britton**.
+
 This folder is the whole app. It is plain static files, so it runs from any web host with no server code.
 
 ## 1 · Make it a website (free, on GitHub Pages)
@@ -37,11 +39,17 @@ tvOS has no web browser and no web views, so this web app can't run on Apple TV 
 - **Songs you load** are analysed in full in the first second or two, before the visuals need them: every kick, snare and hi-hat, a steady beat grid, the downbeats, breakdowns, the build into each drop, and the drop itself. The visuals are then scheduled against the song's own clock, so each hit lands when the sound reaches you, and a build rises *into* its drop instead of reacting after it.
 - **Live sound** (a shared tab such as Spotify, a line-in or a mic) goes to a drum detector on the audio thread (an AudioWorklet). It runs every 2.7 ms whatever the screen's frame rate, and stamps each hit with its exact time. A beat clock locks onto the kicks and shows on-the-beat kicks at the predicted moment. Hits off the grid arrive 10–35 ms after the sound, below what most people notice.
 - **Tight sync for a shared tab (Spotify, YouTube…):** live sound can't be heard ahead of time, so Redline makes its own head start. In Chrome or Edge it mutes the shared tab and plays the sound itself about 200 ms later. In that gap it has already heard every kick, snare and hat, so each one is shown exactly when the sound reaches you. Change the hold-back or turn it off in Settings → TIGHT SYNC. A microphone or line-in can't be held back (the sound is already in the room), so those still rely on the beat clock.
-- **Telling drums apart:** each hit is judged by how it behaves, not only by its frequency range. A kick's beater click dies in a few milliseconds while a snare or hi-hat keeps ringing. A kick whose pitch sweeps down through the mid range has to prove it's a snare by still ringing 32 ms later. A hat on top of a snare has to fade differently from the snare's own noise.
+- **Telling drums apart:** each hit is judged by how it behaves, not only by its frequency range. A kick's beater click dies in a few milliseconds while a snare or hi-hat keeps ringing. A snare has to be *noise*: a synth chord, a voice or a kick's pitch sweep is a few clear notes, so it's turned away, and snares are judged 16 ms after they start. A doubtful one, such as a snare swamped by a kick in a boomy room, gets a second look at 32 ms. A hat on top of a snare has to fade differently from the snare's own noise.
+- **Your screen's own delay:** a frame reaches the screen about one and a half refreshes after it's drawn. Redline measures your screen's refresh rate (60 Hz, 120 Hz, a 30 Hz TV…) and times every hit for it.
 - **Sync test** (Settings → SYNC TEST): a click plus a flash that is scheduled exactly like the visuals. Line them up by eye to cover your TV's picture delay, or tap along to measure your speakers (Bluetooth adds 150–250 ms). The setting is saved on each device.
 - **More than drums:** Redline also hears *chord hits* (several notes struck together), *pads* (chords held underneath), a *synth lead* (a played melody with a steady pitch) and a *vocal* (a sung line, told apart by the wobble a voice puts on a held note), plus every *chord change*.
 - **You choose what each instrument does:** FX panel → for every instrument pick up to three effects (punch in, bright flash, colour split, shockwave, sparkle, liquid flow, glow, colour drift, new palette, warm tint, colour pop, or feed the MilkDrop preset's own low/mid/high) and how strong each is. Saved on each device; RESET puts Redline's own mix back.
 - **Everything is timed to the sound, not just the drums:** songs play 220 ms after Redline hears them, and every smooth reading (bass, melody, pads, chords, the waveform) is shown at the moment its sound reaches you, with each reader's own reaction time taken off.
+
+## Best for each genre
+
+Library → **BEST FOR** sorts every preset and scene by how well it suits House / Techno, Hip-hop & R&B, EDM & Dubstep, Drum & Bass, Pop, Rock or Chill. The red bar under each one shows the fit. The scores come from how each preset was measured moving, pumping with the beat and flashing, plus its palette; Redline's own presets and scenes are placed by hand.
+Picking a genre also steers the auto-pilot towards the best fits. **AUTO** (the default) works out the genre from what's playing (tempo, four-on-the-floor kicks or not, the backbeat, drops, how drum-heavy and how tonal it is) and shows its guess on the button.
 
 ## Credits and licences
 
